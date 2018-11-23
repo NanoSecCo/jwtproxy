@@ -1,5 +1,3 @@
-// +build nethttp
-
 // Copyright 2016 CoreOS, Inc
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build fasthttp
+
 package static
 
 import (
 	"fmt"
-	"net/http"
+	//"net/http"
 	"reflect"
 
 	log "github.com/Sirupsen/logrus"
@@ -27,6 +27,7 @@ import (
 	"github.com/coreos/jwtproxy/config"
 	"github.com/coreos/jwtproxy/jwt/claims"
 	"github.com/coreos/jwtproxy/stop"
+	"github.com/valyala/fasthttp"
 )
 
 func init() {
@@ -37,7 +38,7 @@ type Static struct {
 	requiredClaims map[string]interface{}
 }
 
-func (scv *Static) Handle(req *http.Request, claims jose.Claims) error {
+func (scv *Static) Handle(req *fasthttp.RequestCtx, claims jose.Claims) error {
 	log.Debugf("Verifying %d claims", len(scv.requiredClaims))
 	for name, requiredValue := range scv.requiredClaims {
 		log.Debugf("Verifying claim named: %s", name)

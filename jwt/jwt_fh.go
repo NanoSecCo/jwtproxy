@@ -1,5 +1,3 @@
-// +build nethttp
-
 // Copyright 2016 CoreOS, Inc
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build fasthttp
+
 package jwt
 
 import (
 	"errors"
 	"math/rand"
-	"net/http"
+	//"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -32,6 +32,7 @@ import (
 	"github.com/coreos/jwtproxy/config"
 	"github.com/coreos/jwtproxy/jwt/keyserver"
 	"github.com/coreos/jwtproxy/jwt/noncestorage"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -47,11 +48,11 @@ func init() {
 	randSource = rand.NewSource(time.Now().UnixNano())
 }
 
-func Sign(req *http.Request, key *key.PrivateKey, params config.SignerParams) error {
+func Sign1(req *fasthttp.Request, key *key.PrivateKey, params config.SignerParams) error {
 	// Create Claims.
 	claims := jose.Claims{
 		"iss": params.Issuer,
-		"aud": req.URL.Scheme + "://" + req.URL.Host,
+		"aud": string(req.URI().Scheme()) + "://" + string(req.URI().Host()),
 		"iat": time.Now().Unix(),
 		"nbf": time.Now().Add(-params.MaxSkew).Unix(),
 		"exp": time.Now().Add(params.ExpirationTime).Unix(),
@@ -70,7 +71,30 @@ func Sign(req *http.Request, key *key.PrivateKey, params config.SignerParams) er
 	return nil
 }
 
-func Verify(req *http.Request, keyServer keyserver.Reader, nonceVerifier noncestorage.NonceStorage, audience *url.URL, maxSkew time.Duration, maxTTL time.Duration) (jose.Claims, error) {
+func Sign(req *fasthttp.RequestCtx, key *key.PrivateKey, params config.SignerParams) error {
+	// Create Claims.
+	claims := jose.Claims{
+		"iss": params.Issuer,
+		"aud": string(req.URI().Scheme()) + "://" + string(req.URI().Host()),
+		"iat": time.Now().Unix(),
+		"nbf": time.Now().Add(-params.MaxSkew).Unix(),
+		"exp": time.Now().Add(params.ExpirationTime).Unix(),
+		"jti": generateNonce(params.NonceLength),
+	}
+
+	// Create JWT.
+	jwt, err := jose.NewSignedJWT(claims, key.Signer())
+	if err != nil {
+		return err
+	}
+
+	// Add it as a header in the request.
+	req.Request.Header.Add("Authorization", "Bearer "+jwt.Encode())
+
+	return nil
+}
+
+func Verify(req *fasthttp.RequestCtx, keyServer keyserver.Reader, nonceVerifier noncestorage.NonceStorage, audience *url.URL, maxSkew time.Duration, maxTTL time.Duration) (jose.Claims, error) {
 	// Extract token from request.
 	token, err := oidc.ExtractBearerToken(req)
 	if err != nil {
