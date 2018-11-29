@@ -1,5 +1,3 @@
-// +build nethttp
-
 // Copyright 2016 CoreOS, Inc
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,23 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build fasthttp
+
 package claims
 
 import (
 	"fmt"
-	"net/http"
+	//"net/http"
 
 	"github.com/coreos/go-oidc/jose"
 
 	"github.com/coreos/jwtproxy/config"
 	"github.com/coreos/jwtproxy/stop"
+	"github.com/nanosecco/fasthttp"
 )
 
 type Constructor func(config.RegistrableComponentConfig) (Verifier, error)
 
 type Verifier interface {
 	stop.Stoppable
-	Handle(*http.Request, jose.Claims) error
+	Handle(*fasthttp.RequestCtx, jose.Claims) error
 }
 
 var verifierTypes = make(map[string]Constructor)

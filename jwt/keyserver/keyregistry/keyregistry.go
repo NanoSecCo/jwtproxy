@@ -1,5 +1,3 @@
-// +build nethttp
-
 // Copyright 2016 CoreOS, Inc
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// +build fasthttp
+
 package keyregistry
 
 import (
@@ -21,23 +21,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"net/http"
+	//"io/ioutil"
+	//"net/http"
 	"net/url"
 	"path"
 	"strconv"
 	"sync"
 	"time"
+	"bufio"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/coreos/go-oidc/key"
-	"github.com/gregjones/httpcache"
+	//"github.com/gregjones/httpcache"
 	"gopkg.in/yaml.v2"
 
 	"github.com/coreos/jwtproxy/config"
 	"github.com/coreos/jwtproxy/jwt"
 	"github.com/coreos/jwtproxy/jwt/keyserver"
 	"github.com/coreos/jwtproxy/jwt/keyserver/keyregistry/keycache"
+	"github.com/nanosecco/fasthttp"
 )
 
 func init() {
@@ -51,7 +53,7 @@ type client struct {
 	signerParams config.SignerParams
 	stopping     chan struct{}
 	inFlight     *sync.WaitGroup
-	httpClient   *http.Client
+	httpClient   *fasthttp.Client
 }
 
 type Config struct {
@@ -70,31 +72,40 @@ func (krc *client) GetPublicKey(issuer string, keyID string) (*key.PublicKey, er
 	if err != nil {
 		return nil, err
 	}
-	resp, err := krc.httpClient.Do(pubkeyReq)
+
+	resp := fasthttp.AcquireResponse()
+	err = krc.httpClient.Do(pubkeyReq, resp)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		switch resp.StatusCode {
-		case http.StatusNotFound:
+	defer resp.ConnectionClose()
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		switch resp.StatusCode() {
+		case fasthttp.StatusNotFound:
 			return nil, keyserver.ErrPublicKeyNotFound
-		case http.StatusForbidden:
+		case fasthttp.StatusForbidden:
 			return nil, keyserver.ErrPublicKeyExpired
 		default:
-			bodyBytes, bodyErr := ioutil.ReadAll(resp.Body)
+			//bodyBytes, bodyErr := ioutil.ReadAll(resp.bodyStream)
+			//bodyBytes, bodyErr := ioutil.ReadAll(resp.Body())
+			//bodyBytes, bodyErr := ioutil.ReadAll(resp.Body)
+			bodyBytes := resp.Body()
+			//log.Debug("KEYYYYYYYYYYY*- response from key server: %v: %s", resp.StatusCode(), string(bodyBytes))
+/* TODO - check later and fix 
 			if bodyErr != nil {
 				bodyBytes = []byte{}
 			}
+*/
 
-			rerr := fmt.Errorf("Got unexpected response from key server: %v: %s", resp.StatusCode, string(bodyBytes))
+			rerr := fmt.Errorf("Got unexpected response from key server: %v: %s", resp.StatusCode(), string(bodyBytes))
 			return nil, rerr
 		}
 	}
 
 	// Decode the public key we received as a JSON-encoded JWK.
 	var pk key.PublicKey
-	jsonDecoder := json.NewDecoder(resp.Body)
+	jsonDecoder := json.NewDecoder(bytes.NewBuffer(resp.Body()))
 	err = jsonDecoder.Decode(&pk)
 	if err != nil {
 		return nil, err
@@ -142,12 +153,12 @@ func (krc *client) PublishPublicKey(key *key.PublicKey, policy *keyserver.KeyPol
 			return
 		}
 
-		switch resp.StatusCode {
-		case http.StatusOK:
+		switch resp.StatusCode() {
+		case fasthttp.StatusOK:
 			// Published successfully.
 			publishResult.Success()
 			return
-		case http.StatusAccepted:
+		case fasthttp.StatusAccepted:
 			monPublishLog := log.WithFields(log.Fields{
 				"keyID":        key.ID()[0:10],
 				"signingKeyID": signingKey.ID()[0:10],
@@ -170,23 +181,23 @@ func (krc *client) PublishPublicKey(key *key.PublicKey, policy *keyserver.KeyPol
 						publishResult.SetError(err)
 						return
 					}
-
-					checkPublished, err := krc.httpClient.Do(checkReq)
+					resp := fasthttp.AcquireResponse()
+					err = krc.httpClient.Do(checkReq, resp)
 					if err != nil {
 						publishResult.SetError(err)
 						return
 					}
 
-					switch checkPublished.StatusCode {
-					case http.StatusOK:
+					switch resp.StatusCode() {
+					case fasthttp.StatusOK:
 						publishResult.Success()
 						return
-					case http.StatusConflict:
+					case fasthttp.StatusConflict:
 						monPublishLog.Debug("Key not yet approved, waiting")
 					default:
 						checkPublishedErr := fmt.Errorf(
 							"Unexpected response code when checking approval status %d",
-							checkPublished.StatusCode,
+							resp.StatusCode(),
 						)
 						publishResult.SetError(checkPublishedErr)
 						return
@@ -226,7 +237,7 @@ func (krc *client) DeletePublicKey(signingKey *key.PrivateKey) error {
 		return err
 	}
 
-	if resp.StatusCode != 204 {
+	if resp.StatusCode() != 204 {
 		return fmt.Errorf("Unexpected response code when deleting public key: %d", resp.StatusCode)
 	}
 
@@ -250,7 +261,7 @@ func (krc *client) Stop() <-chan struct{} {
 	return finished
 }
 
-func (krc *client) signAndDo(method string, url *url.URL, body io.Reader, signingKey *key.PrivateKey) (*http.Response, error) {
+func (krc *client) signAndDo(method string, url *url.URL, body io.Reader, signingKey *key.PrivateKey) (*fasthttp.Response, error) {
 	// Create an HTTP request to the key server to publish a new key.
 	req, err := krc.prepareRequest(method, url, body)
 	if err != nil {
@@ -258,18 +269,24 @@ func (krc *client) signAndDo(method string, url *url.URL, body io.Reader, signin
 	}
 
 	// Sign it with the specified private key and config.
-	err = jwt.Sign(req, signingKey, krc.signerParams)
+	err = jwt.Sign1(req, signingKey, krc.signerParams) //fasthttp.Request
 	if err != nil {
 		return nil, err
 	}
 
 	// Execute the request, if it returns a 200, close the channel immediately.
-	return krc.httpClient.Do(req)
+	resp := fasthttp.AcquireResponse()
+	err = krc.httpClient.Do(req, resp)
+	return resp, err
 }
 
-func (krc *client) prepareRequest(method string, url *url.URL, body io.Reader) (*http.Request, error) {
+func (krc *client) prepareRequest(method string, url *url.URL, body io.Reader) (*fasthttp.Request, error) {
 	// Create an HTTP request to the key server to publish a new key.
-	req, err := http.NewRequest(method, url.String(), body)
+	//req, err := http.NewRequest(method, url.String(), body)
+	req := fasthttp.AcquireRequest()
+        req.SetRequestURI(url.String())
+	err := req.Read(bufio.NewReader(body))
+
 	if err != nil {
 		return nil, err
 	}
@@ -300,6 +317,7 @@ func (krc *client) absURL(pathParams ...string) *url.URL {
 }
 
 func constructReader(registrableComponentConfig config.RegistrableComponentConfig) (keyserver.Reader, error) {
+	fmt.Println("constructReader")
 	bytes, err := yaml.Marshal(registrableComponentConfig.Options)
 	if err != nil {
 		return nil, err
@@ -323,8 +341,9 @@ func constructReader(registrableComponentConfig config.RegistrableComponentConfi
 		return nil, fmt.Errorf("Unable to construct cache: %s", err)
 	}
 
-	httpClient := &http.Client{
-		Transport: httpcache.NewTransport(cache),
+	httpClient := &fasthttp.Client{
+		// TODO - fix this later
+		// Transport: httpcache.NewTransport(cache),
 	}
 
 	return &client{
@@ -337,6 +356,7 @@ func constructReader(registrableComponentConfig config.RegistrableComponentConfi
 }
 
 func constructManager(registrableComponentConfig config.RegistrableComponentConfig, signerParams config.SignerParams) (keyserver.Manager, error) {
+	fmt.Println("*** constructManager")
 	bytes, err := yaml.Marshal(registrableComponentConfig.Options)
 	if err != nil {
 		return nil, err
@@ -347,11 +367,16 @@ func constructManager(registrableComponentConfig config.RegistrableComponentConf
 		return nil, err
 	}
 
+	DefaultClient := &fasthttp.Client{
+		// TODO - fix this later
+		// Transport: httpcache.NewTransport(cache),
+	}
 	return &client{
 		registry:     cfg.Registry.URL,
 		signerParams: signerParams,
 		inFlight:     &sync.WaitGroup{},
 		stopping:     make(chan struct{}),
-		httpClient:   http.DefaultClient,
+		//httpClient:   http.DefaultClient,
+		httpClient:   DefaultClient,
 	}, nil
 }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build nethttp
+// +build fasthttp
 
 package proxy
 
@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
-	"net/http"
+	//"net/http"
 	"os"
 	"strings"
 	"time"
@@ -32,9 +32,12 @@ import (
 	"github.com/coreos/jwtproxy/stop"
 	"github.com/coreos/goproxy"
 	"github.com/tylerb/graceful"
+	"github.com/nanosecco/fasthttp"
 )
 
-type Handler func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response)
+//declare handler
+//type Handler func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response)
+type Handler func(r *fasthttp.RequestCtx, ctx *goproxy.ProxyCtx) (*fasthttp.RequestCtx, error)
 
 type Proxy struct {
 	*goproxy.ProxyHttpServer
@@ -47,9 +50,11 @@ func (proxy *Proxy) Serve(listenAddr, crtFile, keyFile string, shutdownTimeout t
 	// Create a graceful server.
 	proxy.grace = &graceful.Server{
 		NoSignalHandling: true,
-		Server: &http.Server{
+		//Server: &http.Server{
+		Server: &fasthttp.Server{
 			Addr:    listenAddr,
 			Handler: proxy.ProxyHttpServer,
+			//Handler: nil,
 		},
 	}
 	proxy.shutdownTimeout = shutdownTimeout
@@ -139,7 +144,7 @@ func NewProxy(proxyHandler Handler, caKeyPath, caCertPath string, insecureSkipVe
 func NewReverseProxy(proxyHandler Handler) (*Proxy, error) {
 	// Create a reverse proxy.
 	reverseProxy := goproxy.NewReverseProxyHttpServer()
-	reverseProxy.Tr = http.DefaultTransport.(*http.Transport)
+	reverseProxy.Tr = fasthttp.DefaultTransport.(*fasthttp.Transport)
 	reverseProxy.Verbose = log.GetLevel() == log.DebugLevel
 
 	// Handle requests with the specified handler.
@@ -170,7 +175,7 @@ func rejectMITMHandler() goproxy.FuncHttpsHandler {
 	}
 }
 
-func setupClientTransport(insecureSkipVerify bool, certificatePaths []string) (*http.Transport, error) {
+func setupClientTransport(insecureSkipVerify bool, certificatePaths []string) (*fasthttp.Transport, error) {
 	tlsConfig := &tls.Config{InsecureSkipVerify: insecureSkipVerify}
 
 	// If any certificates are specified, load them. Otherwise, system-wide certificates are to be
@@ -191,7 +196,7 @@ func setupClientTransport(insecureSkipVerify bool, certificatePaths []string) (*
 		}
 	}
 
-	return &http.Transport{
+	return &fasthttp.Transport{
 		TLSClientConfig: tlsConfig,
 	}, nil
 }
